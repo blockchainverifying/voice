@@ -7,37 +7,22 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-         .glass-card {
-            background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px);
-            border: 1px solid rgba(51, 65, 85, 0.5);
-        }
-    </style>
 </head>
-<body class="bg-gradient-to-br from-slate-900 to-gray-900 text-white flex items-center justify-center min-h-screen p-4">
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen p-4">
 
-    <div class="w-full max-w-sm mx-auto p-8 glass-card rounded-2xl shadow-2xl text-center">
-        <h1 class="text-3xl font-bold text-white mb-2">Public Radio</h1>
-        <p id="status" class="text-lg text-gray-400 mb-8">Connecting...</p>
-
-        <div class="my-8">
-            <button id="micBtn" class="w-24 h-24 flex items-center justify-center bg-slate-700 text-white font-bold rounded-full transition-all duration-300 mx-auto shadow-lg">
-                <i id="micIcon" class="fas fa-microphone text-3xl text-green-400"></i>
-            </button>
-            <p class="text-xs mt-2 text-gray-500">Talk to Admin</p>
-        </div>
-
-        <div id="notification-bar" class="bg-blue-500/20 p-3 rounded-lg text-blue-300 font-medium text-sm hidden">
-        </div>
+    <div class="text-center">
+        <i class="fas fa-broadcast-tower text-6xl text-blue-400 mb-4"></i>
+        <h1 class="text-3xl font-bold text-white">Connected to Radio</h1>
+        <p id="status" class="text-lg text-gray-400 mt-2">Your camera feed is live for the admin.</p>
         
-        <audio id="adminAudio" autoplay></audio>
+        <!-- Local video preview (optional, can be hidden) -->
+        <video id="localVideo" autoplay muted playsinline class="w-48 h-auto rounded-lg mt-4 mx-auto border-2 border-slate-700"></video>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
@@ -53,15 +38,11 @@
 
         // --- DOM Elements ---
         const statusEl = document.getElementById('status');
-        const adminAudio = document.getElementById('adminAudio');
-        const micBtn = document.getElementById('micBtn');
-        const micIcon = document.getElementById('micIcon');
-        const notificationBar = document.getElementById('notification-bar');
+        const localVideo = document.getElementById('localVideo');
 
         // --- App State ---
-        let db, auth, rtdb;
+        let db, rtdb;
         let myId = null;
-        let adminBroadcastConnection;
         let privateConnection;
         let myStream;
 
@@ -69,15 +50,15 @@
         async function initialize() {
             const app = initializeApp(firebaseConfig);
             db = getFirestore(app);
-            auth = getAuth(app);
+            const auth = getAuth(app);
             rtdb = getDatabase(app);
 
             try {
-                myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-                myStream.getVideoTracks()[0].enabled = false; // Start with video off
+                myStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                localVideo.srcObject = myStream;
             } catch (e) {
                 console.error("Could not get media stream:", e);
-                statusEl.textContent = "Please allow mic/camera access.";
+                statusEl.textContent = "Please allow camera access.";
                 return;
             }
 
@@ -85,24 +66,11 @@
                 if (user) {
                     myId = user.uid;
                     setupPresence();
-                    listenForAdminBroadcast();
                     listenForPrivateCalls();
-                    listenForNotifications();
-                    statusEl.textContent = 'Connected to Radio';
                 }
             });
 
             await signInAnonymously(auth);
-            micBtn.addEventListener('click', toggleMic);
-        }
-
-        function toggleMic() {
-            const audioTrack = myStream.getAudioTracks()[0];
-            if (audioTrack) {
-                audioTrack.enabled = !audioTrack.enabled;
-                micIcon.classList.toggle('text-green-400', audioTrack.enabled);
-                micIcon.classList.toggle('text-red-400', !audioTrack.enabled);
-            }
         }
         
         function setupPresence() {
@@ -118,43 +86,8 @@
             });
         }
 
-        function listenForAdminBroadcast() {
-            const permissionRef = doc(db, 'permissions', myId);
-            onSnapshot(permissionRef, (snapshot) => {
-                const canListen = snapshot.exists() && snapshot.data().canListen;
-                if (canListen && !adminBroadcastConnection) {
-                    connectToAdminBroadcast();
-                } else if (!canListen && adminBroadcastConnection) {
-                    adminBroadcastConnection.close();
-                    adminBroadcastConnection = null;
-                    adminAudio.srcObject = null;
-                }
-            });
-        }
-
-        async function connectToAdminBroadcast() {
-            const broadcastRef = doc(db, 'broadcast', 'admin_offer');
-            const docSnap = await getDoc(broadcastRef);
-            if (!docSnap.exists()) return;
-
-            const offer = docSnap.data().offer;
-            const pc = new RTCPeerConnection();
-            adminBroadcastConnection = pc;
-
-            pc.ontrack = (event) => {
-                if (event.track.kind === 'audio') {
-                    adminAudio.srcObject = event.streams[0];
-                }
-            };
-            
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            // One-way broadcast doesn't require sending answer back
-        }
-
         function listenForPrivateCalls() {
-            const offerRef = doc(db, 'private_calls', myId);
+            const offerRef = doc(db, 'webrtc_calls', myId);
             onSnapshot(offerRef, async (snapshot) => {
                 if (snapshot.exists()) {
                     const { offer } = snapshot.data();
@@ -164,14 +97,11 @@
                         const pc = new RTCPeerConnection();
                         privateConnection = pc;
                         
-                        // Enable video only on request from admin
-                        myStream.getVideoTracks()[0].enabled = true;
                         myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
                         
                         pc.onconnectionstatechange = () => {
                             if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-                                myStream.getVideoTracks()[0].enabled = false; // Turn off camera on disconnect
-                                deleteDoc(offerRef); // Clean up call document
+                                deleteDoc(offerRef);
                             }
                         };
                         
@@ -180,27 +110,15 @@
                         await pc.setLocalDescription(answer);
                         await updateDoc(offerRef, { answer });
                     }
+                } else {
+                    if (privateConnection) {
+                        privateConnection.close();
+                        privateConnection = null;
+                    }
                 }
             });
         }
         
-        function listenForNotifications() {
-            const notificationRef = doc(db, 'notifications', 'latest');
-            onSnapshot(notificationRef, (snapshot) => {
-                if (snapshot.exists()) {
-                    const { text } = snapshot.data();
-                    notificationBar.textContent = text;
-                    notificationBar.classList.remove('hidden');
-                    speakText(text);
-                }
-            });
-        }
-        
-        function speakText(text) {
-            const utterance = new SpeechSynthesisUtterance(text);
-            speechSynthesis.speak(utterance);
-        }
-
         initialize();
     </script>
 </body>
