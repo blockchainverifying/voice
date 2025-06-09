@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - Radio Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .glass-card {
+            background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px);
+            border: 1px solid rgba(51, 65, 85, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-gray-900 text-white min-h-screen p-4">
+
+    <div class="container mx-auto">
+        <h1 class="text-3xl font-bold text-center mb-6">Radio Admin Panel</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            <!-- Admin Controls -->
+            <div class="md:col-span-1 glass-card p-6 rounded-2xl">
+                <h2 class="text-xl font-bold mb-4">Admin Controls</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label for="notificationText" class="block text-sm font-medium text-gray-300 mb-1">Send Push Notification</label>
+                        <textarea id="notificationText" rows="3" class="w-full p-2 bg-slate-700 rounded-lg border border-slate-600" placeholder="Type notification text..."></textarea>
+                        <button id="sendNotificationBtn" class="w-full mt-2 bg-blue-600 hover:bg-blue-700 rounded-lg py-2 font-semibold">Send & Speak</button>
+                    </div>
+                    <div class="pt-4">
+                         <h3 class="text-lg font-bold mb-2">My Stream</h3>
+                         <audio id="localAudio" muted autoplay playsinline class="w-full rounded-lg"></audio>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User List -->
+            <div class="md:col-span-2 glass-card p-6 rounded-2xl">
+                <h2 class="text-xl font-bold mb-4">Live Users (<span id="userCount">0</span>)</h2>
+                <div id="user-list" class="space-y-3 max-h-[60vh] overflow-y-auto">
+                    <!-- User list will be populated here -->
+                </div>
+            </div>
+
+        </div>
+    </div>
+    
+    <!-- Modal for viewing user camera -->
+    <div id="cameraModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center hidden">
+        <div class="bg-slate-800 p-4 rounded-lg max-w-2xl w-full">
+            <h3 id="modalUserName" class="text-lg font-bold mb-2">User Camera</h3>
+            <video id="userCameraFeed" autoplay playsinline class="w-full rounded-lg"></video>
+            <button id="closeModalBtn" class="w-full mt-4 bg-red-600 hover:bg-red-700 rounded-lg py-2 font-semibold">Close</button>
+        </div>
+    </div>
+
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, setDoc, updateDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCwzPmWpDmx4SEPeZkvzcYLnOd4k6QLe2U",
+            authDomain: "my-voice-app-4eca5.firebaseapp.com",
+            projectId: "my-voice-app-4eca5",
+            storageBucket: "my-voice-app-4eca5.appspot.com",
+            messagingSenderId: "972654270500",
+            appId: "1:972654270500:web:c29a42a09972f5a4ce20b1",
+            databaseURL: "https://my-voice-app-4eca5-default-rtdb.firebaseio.com/"
+        };
+        const ADMIN_ID = 'the_radio_admin';
+
+        // --- DOM Elements ---
+        const userListEl = document.getElementById('user-list');
+        const userCountEl = document.getElementById('userCount');
+        const notificationText = document.getElementById('notificationText');
+        const sendNotificationBtn = document.getElementById('sendNotificationBtn');
+        const localAudio = document.getElementById('localAudio');
+        const cameraModal = document.getElementById('cameraModal');
+        const userCameraFeed = document.getElementById('userCameraFeed');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+        const modalUserName = document.getElementById('modalUserName');
+
+        // --- App State ---
+        let db, auth, rtdb;
+        let adminStream;
+        let peerConnections = {}; // For private chat/video
+
+        // --- Main Initialization ---
+        async function initialize() {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            rtdb = getDatabase(app);
+
+            // Get Admin's audio stream
+            adminStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            localAudio.srcObject = adminStream;
+            
+            // Set admin's broadcast offer
+            setupAdminBroadcast();
+
+            listenToUsers();
+
+            sendNotificationBtn.addEventListener('click', sendNotification);
+            closeModalBtn.addEventListener('click', closeCameraModal);
+        }
+
+        function listenToUsers() {
+            const statusRef = ref(rtdb, 'status/');
+            onValue(statusRef, (snapshot) => {
+                const users = snapshot.val() || {};
+                userListEl.innerHTML = '';
+                userCountEl.textContent = Object.keys(users).length;
+
+                for (const userId in users) {
+                    if (users[userId].state === 'online') {
+                        addUserToListUI(userId);
+                    }
+                }
+            });
+        }
+        
+        function addUserToListUI(userId) {
+            const userEl = document.createElement('div');
+            userEl.id = `user_${userId}`;
+            userEl.className = 'flex items-center justify-between p-2 rounded-md bg-slate-800';
+            userEl.innerHTML = `
+                <div>
+                    <i class="fas fa-user text-green-400 mr-2"></i>
+                    <span class="text-sm font-medium">User-${userId.substring(0, 6)}</span>
+                </div>
+                <div class="flex space-x-2">
+                    <button data-userid="${userId}" class="view-camera-btn bg-purple-600 hover:bg-purple-700 px-2 py-1 text-xs rounded">View Cam</button>
+                    <button data-userid="${userId}" class="toggle-listen-btn bg-green-600 hover:bg-green-700 px-2 py-1 text-xs rounded">Allow Listen</button>
+                </div>
+            `;
+            userListEl.appendChild(userEl);
+
+            userEl.querySelector('.view-camera-btn').addEventListener('click', () => viewUserCamera(userId));
+            userEl.querySelector('.toggle-listen-btn').addEventListener('click', (e) => toggleUserListen(userId, e.target));
+        }
+
+        async function toggleUserListen(userId, button) {
+            const userPermissionRef = doc(db, 'permissions', userId);
+            const docSnap = await getDoc(userPermissionRef);
+            const canListen = !(docSnap.exists() && docSnap.data().canListen);
+
+            await setDoc(userPermissionRef, { canListen });
+            
+            button.textContent = canListen ? 'Mute User' : 'Allow Listen';
+            button.classList.toggle('bg-green-600', !canListen);
+            button.classList.toggle('bg-red-600', canListen);
+        }
+
+        async function viewUserCamera(userId) {
+            if (peerConnections[userId]) {
+                peerConnections[userId].close();
+                delete peerConnections[userId];
+            }
+            
+            const pc = new RTCPeerConnection();
+            peerConnections[userId] = pc;
+
+            pc.ontrack = (event) => {
+                userCameraFeed.srcObject = event.streams[0];
+            };
+
+            const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
+            await pc.setLocalDescription(offer);
+
+            const offerRef = doc(db, 'private_calls', userId);
+            await setDoc(offerRef, { offer });
+
+            modalUserName.textContent = `Live feed from User-${userId.substring(0,6)}`;
+            cameraModal.classList.remove('hidden');
+
+            onSnapshot(offerRef, (snapshot) => {
+                const data = snapshot.data();
+                if (data && data.answer && !pc.currentRemoteDescription) {
+                    pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            });
+        }
+
+        function closeCameraModal() {
+            cameraModal.classList.add('hidden');
+            userCameraFeed.srcObject = null;
+            // Clean up connections
+            Object.keys(peerConnections).forEach(id => {
+                if (peerConnections[id]) peerConnections[id].close();
+                delete peerConnections[id];
+            });
+        }
+        
+        async function setupAdminBroadcast() {
+            const pc = new RTCPeerConnection();
+            adminStream.getTracks().forEach(track => pc.addTrack(track, adminStream));
+            
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const broadcastRef = doc(db, 'broadcast', 'admin_offer');
+            await setDoc(broadcastRef, { offer });
+        }
+        
+        async function sendNotification() {
+            const text = notificationText.value.trim();
+            if (!text) return;
+
+            const notificationRef = doc(db, 'notifications', 'latest');
+            await setDoc(notificationRef, { text, timestamp: Date.now() });
+            notificationText.value = '';
+        }
+
+        initialize();
+
+    </script>
+</body>
+</html>
