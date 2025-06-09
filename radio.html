@@ -22,7 +22,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, deleteDoc, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
@@ -34,6 +34,14 @@
             messagingSenderId: "972654270500",
             appId: "1:972654270500:web:c29a42a09972f5a4ce20b1",
             databaseURL: "https://my-voice-app-4eca5-default-rtdb.asia-southeast1.firebasedatabase.app"
+        };
+        
+        // --- WebRTC Configuration ---
+        const servers = {
+            iceServers: [
+                { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+            ],
+            iceCandidatePoolSize: 10,
         };
 
         // --- DOM Elements ---
@@ -57,7 +65,6 @@
                 myStream = await navigator.mediaDevices.getUserMedia({ video: true });
                 localVideo.srcObject = myStream;
             } catch (e) {
-                console.error("Could not get media stream:", e);
                 statusEl.textContent = "Please allow camera access.";
                 return;
             }
@@ -87,28 +94,41 @@
         }
 
         function listenForPrivateCalls() {
-            const offerRef = doc(db, 'webrtc_calls', myId);
-            onSnapshot(offerRef, async (snapshot) => {
+            const callDocRef = doc(db, 'webrtc_calls', myId);
+            onSnapshot(callDocRef, async (snapshot) => {
                 if (snapshot.exists()) {
                     const { offer } = snapshot.data();
                     if (offer) {
                         if (privateConnection) privateConnection.close();
                         
-                        const pc = new RTCPeerConnection();
+                        const pc = new RTCPeerConnection(servers);
                         privateConnection = pc;
                         
                         myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
                         
+                        const clientCandidatesRef = collection(callDocRef, 'clientCandidates');
+                        const adminCandidatesRef = collection(callDocRef, 'adminCandidates');
+                        
+                        pc.onicecandidate = event => {
+                           if(event.candidate) addDoc(clientCandidatesRef, event.candidate.toJSON());
+                        };
+
+                        onSnapshot(adminCandidatesRef, (snapshot) => {
+                            snapshot.docChanges().forEach((change) => {
+                                if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                            });
+});
+                        
                         pc.onconnectionstatechange = () => {
                             if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-                                deleteDoc(offerRef);
+                                deleteDoc(callDocRef);
                             }
                         };
                         
                         await pc.setRemoteDescription(new RTCSessionDescription(offer));
                         const answer = await pc.createAnswer();
                         await pc.setLocalDescription(answer);
-                        await updateDoc(offerRef, { answer });
+                        await updateDoc(callDocRef, { answer });
                     }
                 } else {
                     if (privateConnection) {
