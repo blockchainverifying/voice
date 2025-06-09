@@ -52,15 +52,17 @@
 
             <!-- Video Grid -->
             <div class="lg:col-span-3 glass-card p-6 rounded-2xl">
-                <h2 class="text-xl font-bold mb-4">Live Camera Feeds</h2>
+                <h2 class="text-xl font-bold mb-4">Live Feeds</h2>
                 <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                     <!-- Live feeds will be populated here -->
                 </div>
             </div>
-
         </div>
     </div>
     
+    <!-- Hidden audio container for user streams -->
+    <div id="user-audio-container" class="hidden"></div>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
@@ -80,6 +82,7 @@
 
         // --- DOM Elements ---
         const videoGridEl = document.getElementById('video-grid');
+        const userAudioContainer = document.getElementById('user-audio-container');
         const userCountEl = document.getElementById('userCount');
         const notificationText = document.getElementById('notificationText');
         const sendNotificationBtn = document.getElementById('sendNotificationBtn');
@@ -141,6 +144,7 @@
         
         function addUserVideoUI(userId) {
             if (document.getElementById(`video_card_${userId}`)) return;
+
             const videoCard = document.createElement('div');
             videoCard.id = `video_card_${userId}`;
             videoCard.className = 'video-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
@@ -166,8 +170,20 @@
             peerConnections[userId] = pc;
 
             pc.ontrack = (event) => {
-                const videoEl = document.getElementById(`video_${userId}`);
-                if (videoEl) videoEl.srcObject = event.streams[0];
+                const stream = event.streams[0];
+                if (event.track.kind === 'video') {
+                    const videoEl = document.getElementById(`video_${userId}`);
+                    if (videoEl) videoEl.srcObject = stream;
+                } else if (event.track.kind === 'audio') {
+                    let audioEl = document.getElementById(`audio_${userId}`);
+                    if (!audioEl) {
+                        audioEl = document.createElement('audio');
+                        audioEl.id = `audio_${userId}`;
+                        audioEl.autoplay = true;
+                        userAudioContainer.appendChild(audioEl);
+                    }
+                    audioEl.srcObject = stream;
+                }
             };
             
             pc.onconnectionstatechange = () => {
@@ -196,6 +212,10 @@
                 delete peerConnections[userId];
             }
             removeUserVideoUI(userId);
+            
+            const audioEl = document.getElementById(`audio_${userId}`);
+            if (audioEl) audioEl.remove();
+
             deleteDoc(doc(db, 'private_calls', userId));
         }
 
@@ -228,12 +248,12 @@
         }
 
         async function toggleScreenShare() {
-            if (adminScreenStream) { // Agar screen share on hai
+            if (adminScreenStream) {
                 replaceBroadcastTrack(adminMicStream);
                 adminScreenStream.getTracks().forEach(track => track.stop());
                 adminScreenStream = null;
                 shareScreenBtn.innerHTML = '<i class="fas fa-desktop mr-2"></i><span>Share System Audio</span>';
-            } else { // Agar screen share off hai
+            } else {
                 adminScreenStream = await navigator.mediaDevices.getDisplayMedia({ audio: true });
                 replaceBroadcastTrack(adminScreenStream);
                 shareScreenBtn.innerHTML = '<i class="fas fa-stop-circle mr-2"></i><span>Stop Sharing</span>';
