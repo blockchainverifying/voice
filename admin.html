@@ -49,17 +49,23 @@
         
         // --- App State ---
         let db, rtdb;
-        let peerConnections = {}; 
+        let peerConnections = {}; // Will now store { pc, unsubscribe }
 
         // --- Main Initialization ---
         async function initialize() {
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            const auth = getAuth(app);
-            rtdb = getDatabase(app);
-            await signInAnonymously(auth);
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                const auth = getAuth(app);
+                rtdb = getDatabase(app);
+                await signInAnonymously(auth);
 
-            listenToUsers();
+                console.log("Admin Panel Initialized. Listening for users...");
+                listenToUsers();
+            } catch (e) {
+                console.error("Initialization failed:", e);
+                alert("Could not connect to Firebase. Check console for errors.");
+            }
         }
 
         function listenToUsers() {
@@ -114,8 +120,7 @@
         async function connectToUser(userId) {
             addUserVideoUI(userId);
             const pc = new RTCPeerConnection();
-            peerConnections[userId] = pc;
-
+            
             pc.ontrack = (event) => {
                 const videoEl = document.getElementById(`video_${userId}`);
                 if (videoEl) {
@@ -132,25 +137,32 @@
             const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
             await pc.setLocalDescription(offer);
 
-            // ** FIX: Using the correct collection name 'webrtc_calls' **
             const offerRef = doc(db, 'webrtc_calls', userId);
             await setDoc(offerRef, { offer });
 
-            onSnapshot(offerRef, (snapshot) => {
+            const unsubscribe = onSnapshot(offerRef, (snapshot) => {
+                // ** FIX: Check if the connection is already closed before processing the signal **
+                if (pc.signalingState === 'closed') {
+                    return; 
+                }
                 const data = snapshot.data();
-                if (data && data.answer && pc.signalingState !== 'stable') {
+                if (data && data.answer && pc.signalingState === 'have-local-offer') {
                     pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 }
             });
+
+            // Store both the connection and its listener's unsubscribe function
+            peerConnections[userId] = { pc, unsubscribe };
         }
         
         function disconnectFromUser(userId) {
             if (peerConnections[userId]) {
-                peerConnections[userId].close();
+                // ** FIX: Detach the Firestore listener before closing the connection **
+                peerConnections[userId].unsubscribe();
+                peerConnections[userId].pc.close();
                 delete peerConnections[userId];
             }
             removeUserVideoUI(userId);
-             // ** FIX: Using the correct collection name 'webrtc_calls' **
             deleteDoc(doc(db, 'webrtc_calls', userId));
         }
 
