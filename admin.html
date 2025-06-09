@@ -29,7 +29,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteDoc, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
@@ -46,9 +46,7 @@
         // --- WebRTC Configuration ---
         const servers = {
             iceServers: [
-                {
-                    urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'],
-                },
+                { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
             ],
             iceCandidatePoolSize: 10,
         };
@@ -59,7 +57,7 @@
         
         // --- App State ---
         let db, rtdb;
-        let peerConnections = {}; // Will now store { pc, unsubscribe }
+        let peerConnections = {}; 
 
         // --- Main Initialization ---
         async function initialize() {
@@ -70,55 +68,34 @@
                 rtdb = getDatabase(app);
                 await signInAnonymously(auth);
 
-                console.log("Admin Panel Initialized. Listening for users...");
                 listenToUsers();
-            } catch (e) {
-                console.error("Initialization failed:", e);
-                alert("Could not connect to Firebase. Check console for errors.");
-            }
+            } catch (e) { console.error("Initialization failed:", e); }
         }
 
         function listenToUsers() {
             const statusRef = ref(rtdb, 'status/');
             onValue(statusRef, (snapshot) => {
                 const users = snapshot.val() || {};
-                const onlineUsers = new Set();
+                const onlineUsers = new Set(Object.keys(users).filter(id => users[id].state === 'online'));
                 
-                for (const userId in users) {
-                    if (users[userId].state === 'online') {
-                        onlineUsers.add(userId);
-                    }
-                }
                 userCountEl.textContent = onlineUsers.size;
 
-                // Naye users ke liye connection banayein
                 onlineUsers.forEach(userId => {
-                    if (!peerConnections[userId]) {
-                        connectToUser(userId);
-                    }
+                    if (!peerConnections[userId]) connectToUser(userId);
                 });
 
-                // Offline users ka connection saaf karein
                 Object.keys(peerConnections).forEach(userId => {
-                    if (!onlineUsers.has(userId)) {
-                        disconnectFromUser(userId);
-                    }
+                    if (!onlineUsers.has(userId)) disconnectFromUser(userId);
                 });
             });
         }
         
         function addUserVideoUI(userId) {
             if (document.getElementById(`video_card_${userId}`)) return;
-
             const videoCard = document.createElement('div');
             videoCard.id = `video_card_${userId}`;
             videoCard.className = 'video-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
-            videoCard.innerHTML = `
-                <video id="video_${userId}" autoplay playsinline class="w-full h-auto aspect-video bg-black"></video>
-                <div class="p-2">
-                    <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
-                </div>
-            `;
+            videoCard.innerHTML = `<video id="video_${userId}" autoplay playsinline class="w-full h-auto aspect-video bg-black"></video><div class="p-2"><p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p></div>`;
             videoGridEl.appendChild(videoCard);
         }
         
@@ -129,14 +106,11 @@
 
         async function connectToUser(userId) {
             addUserVideoUI(userId);
-            // ** FIX: Added STUN server configuration for better connectivity **
             const pc = new RTCPeerConnection(servers);
             
             pc.ontrack = (event) => {
                 const videoEl = document.getElementById(`video_${userId}`);
-                if (videoEl) {
-                    videoEl.srcObject = event.streams[0];
-                }
+                if (videoEl) videoEl.srcObject = event.streams[0];
             };
             
             pc.onconnectionstatechange = () => {
@@ -145,23 +119,34 @@
                 }
             };
 
+            const callDocRef = doc(db, 'webrtc_calls', userId);
+            const adminCandidatesRef = collection(callDocRef, 'adminCandidates');
+            const clientCandidatesRef = collection(callDocRef, 'clientCandidates');
+
+            // ** FIX: Add ICE candidate handling **
+            pc.onicecandidate = event => {
+                if (event.candidate) addDoc(adminCandidatesRef, event.candidate.toJSON());
+            };
+            
+            onSnapshot(clientCandidatesRef, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                });
+            });
+
             const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
             await pc.setLocalDescription(offer);
+            await setDoc(callDocRef, { offer });
 
-            const offerRef = doc(db, 'webrtc_calls', userId);
-            await setDoc(offerRef, { offer });
-
-            const unsubscribe = onSnapshot(offerRef, (snapshot) => {
-                if (pc.signalingState === 'closed') {
-                    return; 
-                }
+            const answerUnsubscribe = onSnapshot(callDocRef, (snapshot) => {
+                if (pc.signalingState === 'closed') return;
                 const data = snapshot.data();
-                if (data && data.answer && pc.signalingState === 'have-local-offer') {
+                if (data?.answer && pc.signalingState === 'have-local-offer') {
                     pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 }
             });
 
-            peerConnections[userId] = { pc, unsubscribe };
+            peerConnections[userId] = { pc, unsubscribe: answerUnsubscribe };
         }
         
         function disconnectFromUser(userId) {
