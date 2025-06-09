@@ -62,7 +62,7 @@
         let db, auth, rtdb;
         let myId = null;
         let adminBroadcastConnection;
-        let privateConnection; // For camera/private chat
+        let privateConnection;
         let myStream;
 
         // --- Main Initialization ---
@@ -72,8 +72,14 @@
             auth = getAuth(app);
             rtdb = getDatabase(app);
 
-            myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-            myStream.getVideoTracks()[0].enabled = false; // Video ko shuru mein band rakhein
+            try {
+                myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                myStream.getVideoTracks()[0].enabled = false; // Start with video off
+            } catch (e) {
+                console.error("Could not get media stream:", e);
+                statusEl.textContent = "Please allow mic/camera access.";
+                return;
+            }
 
             onAuthStateChanged(auth, user => {
                 if (user) {
@@ -101,8 +107,8 @@
         
         function setupPresence() {
             const myStatusRef = ref(rtdb, 'status/' + myId);
-            const isOfflineForRTDB = { state: 'offline', last_changed: Date.now() };
-            const isOnlineForRTDB = { state: 'online', last_changed: Date.now() };
+            const isOfflineForRTDB = { state: 'offline' };
+            const isOnlineForRTDB = { state: 'online' };
 
             onValue(ref(rtdb, '.info/connected'), (snapshot) => {
                 if (snapshot.val() === false) return;
@@ -136,14 +142,15 @@
             adminBroadcastConnection = pc;
 
             pc.ontrack = (event) => {
-                adminAudio.srcObject = event.streams[0];
+                if (event.track.kind === 'audio') {
+                    adminAudio.srcObject = event.streams[0];
+                }
             };
             
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-
-            // One-way broadcast ke liye answer wapas nahi bheja jaata
+            // One-way broadcast doesn't require sending answer back
         }
 
         function listenForPrivateCalls() {
@@ -157,21 +164,20 @@
                         const pc = new RTCPeerConnection();
                         privateConnection = pc;
                         
-                        // Video track ko enable karein sirf jab request aaye
+                        // Enable video only on request from admin
                         myStream.getVideoTracks()[0].enabled = true;
                         myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
                         
                         pc.onconnectionstatechange = () => {
                             if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-                                myStream.getVideoTracks()[0].enabled = false;
-                                deleteDoc(offerRef); // Call khatm hone par document saaf karein
+                                myStream.getVideoTracks()[0].enabled = false; // Turn off camera on disconnect
+                                deleteDoc(offerRef); // Clean up call document
                             }
                         };
                         
                         await pc.setRemoteDescription(new RTCSessionDescription(offer));
                         const answer = await pc.createAnswer();
                         await pc.setLocalDescription(answer);
-
                         await updateDoc(offerRef, { answer });
                     }
                 }
