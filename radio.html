@@ -23,7 +23,7 @@
 
         <div class="my-8">
             <button id="micBtn" class="w-24 h-24 flex items-center justify-center bg-slate-700 text-white font-bold rounded-full transition-all duration-300 mx-auto shadow-lg">
-                <i id="micIcon" class="fas fa-microphone text-3xl"></i>
+                <i id="micIcon" class="fas fa-microphone text-3xl text-green-400"></i>
             </button>
             <p class="text-xs mt-2 text-gray-500">Talk to Admin</p>
         </div>
@@ -37,7 +37,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
@@ -73,6 +73,7 @@
             rtdb = getDatabase(app);
 
             myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            myStream.getVideoTracks()[0].enabled = false; // Video ko shuru mein band rakhein
 
             onAuthStateChanged(auth, user => {
                 if (user) {
@@ -142,7 +143,7 @@
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            // Answer is not sent back for a one-way broadcast
+            // One-way broadcast ke liye answer wapas nahi bheja jaata
         }
 
         function listenForPrivateCalls() {
@@ -155,8 +156,17 @@
                         
                         const pc = new RTCPeerConnection();
                         privateConnection = pc;
-
+                        
+                        // Video track ko enable karein sirf jab request aaye
+                        myStream.getVideoTracks()[0].enabled = true;
                         myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
+                        
+                        pc.onconnectionstatechange = () => {
+                            if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+                                myStream.getVideoTracks()[0].enabled = false;
+                                deleteDoc(offerRef); // Call khatm hone par document saaf karein
+                            }
+                        };
                         
                         await pc.setRemoteDescription(new RTCSessionDescription(offer));
                         const answer = await pc.createAnswer();
