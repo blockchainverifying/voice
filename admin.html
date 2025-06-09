@@ -6,6 +6,7 @@
     <title>Admin Panel - Live Feeds</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body { font-family: 'Inter', sans-serif; }
         .video-card {
@@ -131,6 +132,7 @@
             const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
             await pc.setLocalDescription(offer);
 
+            // ** FIX: Using the correct collection name 'webrtc_calls' **
             const offerRef = doc(db, 'webrtc_calls', userId);
             await setDoc(offerRef, { offer });
 
@@ -148,6 +150,7 @@
                 delete peerConnections[userId];
             }
             removeUserVideoUI(userId);
+             // ** FIX: Using the correct collection name 'webrtc_calls' **
             deleteDoc(doc(db, 'webrtc_calls', userId));
         }
 
