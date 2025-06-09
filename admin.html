@@ -30,12 +30,18 @@
                 <h2 class="text-xl font-bold mb-4">Admin Controls</h2>
                 <div class="space-y-4">
                     <div>
+                        <button id="shareScreenBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 rounded-lg py-2 font-semibold flex items-center justify-center">
+                            <i class="fas fa-desktop mr-2"></i>
+                            <span>Share System Audio</span>
+                        </button>
+                    </div>
+                    <div>
                         <label for="notificationText" class="block text-sm font-medium text-gray-300 mb-1">Send Notification</label>
                         <textarea id="notificationText" rows="3" class="w-full p-2 bg-slate-700 rounded-lg border border-slate-600" placeholder="Type notification text..."></textarea>
                         <button id="sendNotificationBtn" class="w-full mt-2 bg-blue-600 hover:bg-blue-700 rounded-lg py-2 font-semibold">Send & Speak</button>
                     </div>
                     <div class="pt-4">
-                         <h3 class="text-lg font-bold mb-2">My Stream</h3>
+                         <h3 class="text-lg font-bold mb-2">My Audio Stream</h3>
                          <audio id="localAudio" muted autoplay playsinline class="w-full rounded-lg"></audio>
                     </div>
                      <div>
@@ -57,7 +63,7 @@
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, collection, setDoc, updateDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
         import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
@@ -78,11 +84,14 @@
         const notificationText = document.getElementById('notificationText');
         const sendNotificationBtn = document.getElementById('sendNotificationBtn');
         const localAudio = document.getElementById('localAudio');
+        const shareScreenBtn = document.getElementById('shareScreenBtn');
         
         // --- App State ---
         let db, auth, rtdb;
-        let adminStream;
-        let peerConnections = {}; // Sabhi user connections ko store karega
+        let adminMicStream, adminScreenStream;
+        let currentAdminStream;
+        let peerConnections = {}; 
+        let broadcastPc;
 
         // --- Main Initialization ---
         async function initialize() {
@@ -90,17 +99,17 @@
             db = getFirestore(app);
             auth = getAuth(app);
             rtdb = getDatabase(app);
+            await signInAnonymously(auth);
 
-            // Admin ka audio stream lein
-            adminStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            localAudio.srcObject = adminStream;
+            adminMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            currentAdminStream = adminMicStream;
+            localAudio.srcObject = currentAdminStream;
             
-            // Admin ka broadcast offer set karein
-            setupAdminBroadcast();
-
+            await setupAdminBroadcast();
             listenToUsers();
 
             sendNotificationBtn.addEventListener('click', sendNotification);
+            shareScreenBtn.addEventListener('click', toggleScreenShare);
         }
 
         function listenToUsers() {
@@ -116,14 +125,12 @@
                 }
                 userCountEl.textContent = onlineUsers.size;
 
-                // Naye users ke liye connection banayein
                 onlineUsers.forEach(userId => {
                     if (!peerConnections[userId]) {
                         connectToUser(userId);
                     }
                 });
 
-                // Offline users ka connection saaf karein
                 Object.keys(peerConnections).forEach(userId => {
                     if (!onlineUsers.has(userId)) {
                         disconnectFromUser(userId);
@@ -134,19 +141,17 @@
         
         function addUserVideoUI(userId) {
             if (document.getElementById(`video_card_${userId}`)) return;
-
             const videoCard = document.createElement('div');
             videoCard.id = `video_card_${userId}`;
             videoCard.className = 'video-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
             videoCard.innerHTML = `
-                <video id="video_${userId}" autoplay playsinline class="w-full h-auto"></video>
+                <video id="video_${userId}" autoplay playsinline class="w-full h-auto aspect-video bg-black"></video>
                 <div class="p-2">
                     <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
                     <button data-userid="${userId}" class="toggle-listen-btn mt-1 w-full bg-green-600 hover:bg-green-700 px-2 py-1 text-xs rounded">Allow Listen</button>
                 </div>
             `;
             videoGridEl.appendChild(videoCard);
-
             videoCard.querySelector('.toggle-listen-btn').addEventListener('click', (e) => toggleUserListen(userId, e.target));
         }
         
@@ -157,15 +162,12 @@
 
         async function connectToUser(userId) {
             addUserVideoUI(userId);
-            
             const pc = new RTCPeerConnection();
             peerConnections[userId] = pc;
 
             pc.ontrack = (event) => {
                 const videoEl = document.getElementById(`video_${userId}`);
-                if (videoEl) {
-                    videoEl.srcObject = event.streams[0];
-                }
+                if (videoEl) videoEl.srcObject = event.streams[0];
             };
             
             pc.onconnectionstatechange = () => {
@@ -201,36 +203,53 @@
             const userPermissionRef = doc(db, 'permissions', userId);
             const docSnap = await getDoc(userPermissionRef);
             const canListen = !(docSnap.exists() && docSnap.data().canListen);
-
             await setDoc(userPermissionRef, { canListen });
-            
             button.textContent = canListen ? 'Mute User' : 'Allow Listen';
             button.classList.toggle('bg-green-600', !canListen);
             button.classList.toggle('bg-red-600', canListen);
         }
         
         async function setupAdminBroadcast() {
-            const pc = new RTCPeerConnection();
-            adminStream.getTracks().forEach(track => pc.addTrack(track, adminStream));
-            
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
+            broadcastPc = new RTCPeerConnection();
+            currentAdminStream.getTracks().forEach(track => broadcastPc.addTrack(track, currentAdminStream));
+            const offer = await broadcastPc.createOffer();
+            await broadcastPc.setLocalDescription(offer);
             const broadcastRef = doc(db, 'broadcast', 'admin_offer');
             await setDoc(broadcastRef, { offer });
+        }
+
+        function replaceBroadcastTrack(newStream) {
+            currentAdminStream = newStream;
+            const audioTrack = newStream.getAudioTracks()[0];
+            const sender = broadcastPc.getSenders().find(s => s.track && s.track.kind === 'audio');
+            if (sender) {
+                sender.replaceTrack(audioTrack);
+            }
+        }
+
+        async function toggleScreenShare() {
+            if (adminScreenStream) { // Agar screen share on hai
+                replaceBroadcastTrack(adminMicStream);
+                adminScreenStream.getTracks().forEach(track => track.stop());
+                adminScreenStream = null;
+                shareScreenBtn.innerHTML = '<i class="fas fa-desktop mr-2"></i><span>Share System Audio</span>';
+            } else { // Agar screen share off hai
+                adminScreenStream = await navigator.mediaDevices.getDisplayMedia({ audio: true });
+                replaceBroadcastTrack(adminScreenStream);
+                shareScreenBtn.innerHTML = '<i class="fas fa-stop-circle mr-2"></i><span>Stop Sharing</span>';
+                adminScreenStream.getTracks()[0].onended = () => toggleScreenShare();
+            }
         }
         
         async function sendNotification() {
             const text = notificationText.value.trim();
             if (!text) return;
-
             const notificationRef = doc(db, 'notifications', 'latest');
             await setDoc(notificationRef, { text, timestamp: Date.now() });
             notificationText.value = '';
         }
 
         initialize();
-
     </script>
 </body>
 </html>
