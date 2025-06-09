@@ -3,76 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - Radio Control</title>
+    <title>Admin Panel - Live Feeds</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .glass-card {
-            background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px);
-            border: 1px solid rgba(51, 65, 85, 0.5);
-        }
         .video-card {
             transition: all 0.3s ease-in-out;
         }
-        .mic-button.active {
-            box-shadow: 0 0 25px rgba(34, 197, 94, 0.6);
-        }
     </style>
 </head>
-<body class="bg-gradient-to-br from-slate-900 to-gray-900 text-white min-h-screen p-4">
+<body class="bg-gray-900 text-white min-h-screen p-4">
 
     <div class="container mx-auto">
-        <h1 class="text-3xl font-bold text-center mb-6">Radio Admin Panel</h1>
+        <h1 class="text-3xl font-bold text-center mb-2">Live Camera Feeds</h1>
+        <p class="text-center text-gray-400 mb-6">Online Users: <span id="userCount">0</span></p>
 
-        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            
-            <!-- Admin Controls -->
-            <div class="lg:col-span-1 glass-card p-6 rounded-2xl h-fit">
-                <h2 class="text-xl font-bold mb-4">Admin Controls</h2>
-                <div class="space-y-4">
-                    <div class="flex justify-center">
-                         <button id="micBtn" class="w-20 h-20 flex items-center justify-center bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-full transition-all duration-300 shadow-lg">
-                            <i id="micIcon" class="fas fa-microphone text-3xl"></i>
-                        </button>
-                    </div>
-                    <div>
-                        <button id="shareScreenBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 rounded-lg py-2 font-semibold flex items-center justify-center">
-                            <i class="fas fa-desktop mr-2"></i>
-                            <span>Share System Audio</span>
-                        </button>
-                    </div>
-                    <div>
-                        <label for="notificationText" class="block text-sm font-medium text-gray-300 mb-1">Send Notification</label>
-                        <textarea id="notificationText" rows="3" class="w-full p-2 bg-slate-700 rounded-lg border border-slate-600" placeholder="Type notification text..."></textarea>
-                        <button id="sendNotificationBtn" class="w-full mt-2 bg-blue-600 hover:bg-blue-700 rounded-lg py-2 font-semibold">Send & Speak</button>
-                    </div>
-                     <div>
-                        <h3 class="text-lg font-bold mb-2">Live Users: <span id="userCount">0</span></h3>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Video Grid -->
-            <div class="lg:col-span-3 glass-card p-6 rounded-2xl">
-                <h2 class="text-xl font-bold mb-4">Live Feeds</h2>
-                <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                    <!-- Live feeds will be populated here -->
-                </div>
-            </div>
-
+        <!-- Video Grid -->
+        <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <!-- Live feeds will be populated here -->
         </div>
     </div>
-    
-    <!-- Hidden audio container for user streams -->
-    <div id="user-audio-container" class="hidden"></div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, collection, setDoc, updateDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
-        import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
 
         // --- Firebase Configuration ---
         const firebaseConfig = {
@@ -87,59 +44,21 @@
 
         // --- DOM Elements ---
         const videoGridEl = document.getElementById('video-grid');
-        const userAudioContainer = document.getElementById('user-audio-container');
         const userCountEl = document.getElementById('userCount');
-        const notificationText = document.getElementById('notificationText');
-        const sendNotificationBtn = document.getElementById('sendNotificationBtn');
-        const shareScreenBtn = document.getElementById('shareScreenBtn');
-        const micBtn = document.getElementById('micBtn');
-        const micIcon = document.getElementById('micIcon');
         
         // --- App State ---
-        let db, auth, rtdb;
-        let adminMicStream, adminScreenStream;
-        let currentAdminStream;
+        let db, rtdb;
         let peerConnections = {}; 
-        let broadcastPc;
-        let visualizers = {};
 
         // --- Main Initialization ---
         async function initialize() {
             const app = initializeApp(firebaseConfig);
             db = getFirestore(app);
-            auth = getAuth(app);
+            const auth = getAuth(app);
             rtdb = getDatabase(app);
             await signInAnonymously(auth);
 
-            adminMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            currentAdminStream = adminMicStream;
-            
-            await setupAdminBroadcast();
             listenToUsers();
-
-            sendNotificationBtn.addEventListener('click', sendNotification);
-            shareScreenBtn.addEventListener('click', toggleScreenShare);
-            micBtn.addEventListener('click', toggleAdminMic);
-            toggleAdminMic(false); // Start with mic on
-        }
-        
-        function toggleAdminMic(shouldToggle = true) {
-            const audioTrack = adminMicStream.getAudioTracks()[0];
-            if (!audioTrack) return;
-            
-            if (shouldToggle) {
-                audioTrack.enabled = !audioTrack.enabled;
-            } else {
-                 audioTrack.enabled = true;
-            }
-
-            if (audioTrack.enabled) {
-                micIcon.className = 'fas fa-microphone text-3xl text-green-400';
-                micBtn.classList.add('active', 'bg-green-500/20');
-            } else {
-                micIcon.className = 'fas fa-microphone-slash text-3xl text-red-400';
-                micBtn.classList.remove('active', 'bg-green-500/20');
-            }
         }
 
         function listenToUsers() {
@@ -149,37 +68,41 @@
                 const onlineUsers = new Set();
                 
                 for (const userId in users) {
-                    if (users[userId].state === 'online') onlineUsers.add(userId);
+                    if (users[userId].state === 'online') {
+                        onlineUsers.add(userId);
+                    }
                 }
                 userCountEl.textContent = onlineUsers.size;
 
+                // Naye users ke liye connection banayein
                 onlineUsers.forEach(userId => {
-                    if (!peerConnections[userId]) connectToUser(userId);
+                    if (!peerConnections[userId]) {
+                        connectToUser(userId);
+                    }
                 });
 
+                // Offline users ka connection saaf karein
                 Object.keys(peerConnections).forEach(userId => {
-                    if (!onlineUsers.has(userId)) disconnectFromUser(userId);
+                    if (!onlineUsers.has(userId)) {
+                        disconnectFromUser(userId);
+                    }
                 });
             });
         }
         
         function addUserVideoUI(userId) {
             if (document.getElementById(`video_card_${userId}`)) return;
+
             const videoCard = document.createElement('div');
             videoCard.id = `video_card_${userId}`;
             videoCard.className = 'video-card bg-slate-800 rounded-lg overflow-hidden shadow-lg';
             videoCard.innerHTML = `
                 <video id="video_${userId}" autoplay playsinline class="w-full h-auto aspect-video bg-black"></video>
                 <div class="p-2">
-                    <div class="flex items-center justify-between">
-                        <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
-                        <canvas id="viz_${userId}" class="w-10 h-4"></canvas>
-                    </div>
-                    <button data-userid="${userId}" class="toggle-listen-btn mt-2 w-full bg-green-600 hover:bg-green-700 px-2 py-1 text-xs rounded">Allow Listen</button>
+                    <p class="text-sm font-semibold">User-${userId.substring(0, 6)}</p>
                 </div>
             `;
             videoGridEl.appendChild(videoCard);
-            videoCard.querySelector('.toggle-listen-btn').addEventListener('click', (e) => toggleUserListen(userId, e.target));
         }
         
         function removeUserVideoUI(userId) {
@@ -193,20 +116,9 @@
             peerConnections[userId] = pc;
 
             pc.ontrack = (event) => {
-                const stream = event.streams[0];
-                if (event.track.kind === 'video') {
-                    const videoEl = document.getElementById(`video_${userId}`);
-                    if (videoEl) videoEl.srcObject = stream;
-                } else if (event.track.kind === 'audio') {
-                    let audioEl = document.getElementById(`audio_${userId}`);
-                    if (!audioEl) {
-                        audioEl = document.createElement('audio');
-                        audioEl.id = `audio_${userId}`;
-                        audioEl.autoplay = true;
-                        userAudioContainer.appendChild(audioEl);
-                    }
-                    audioEl.srcObject = stream;
-                    setupVisualizer(userId, stream); // Visualizer setup karein
+                const videoEl = document.getElementById(`video_${userId}`);
+                if (videoEl) {
+                    videoEl.srcObject = event.streams[0];
                 }
             };
             
@@ -216,9 +128,10 @@
                 }
             };
 
-            const offer = await pc.createOffer({ offerToReceiveVideo: 1, offerToReceiveAudio: 1 });
+            const offer = await pc.createOffer({ offerToReceiveVideo: 1 });
             await pc.setLocalDescription(offer);
-            const offerRef = doc(db, 'private_calls', userId);
+
+            const offerRef = doc(db, 'webrtc_calls', userId);
             await setDoc(offerRef, { offer });
 
             onSnapshot(offerRef, (snapshot) => {
@@ -234,91 +147,8 @@
                 peerConnections[userId].close();
                 delete peerConnections[userId];
             }
-            if (visualizers[userId]) {
-                cancelAnimationFrame(visualizers[userId].animationFrameId);
-                delete visualizers[userId];
-            }
             removeUserVideoUI(userId);
-            const audioEl = document.getElementById(`audio_${userId}`);
-            if (audioEl) audioEl.remove();
-            deleteDoc(doc(db, 'private_calls', userId));
-        }
-
-        async function toggleUserListen(userId, button) {
-            const userPermissionRef = doc(db, 'permissions', userId);
-            const docSnap = await getDoc(userPermissionRef);
-            const canListen = !(docSnap.exists() && docSnap.data().canListen);
-            await setDoc(userPermissionRef, { canListen });
-            button.textContent = canListen ? 'Mute User' : 'Allow Listen';
-            button.classList.toggle('bg-green-600', !canListen);
-            button.classList.toggle('bg-red-600', canListen);
-        }
-        
-        async function setupAdminBroadcast() {
-            broadcastPc = new RTCPeerConnection();
-            currentAdminStream.getTracks().forEach(track => broadcastPc.addTrack(track, currentAdminStream));
-            const offer = await broadcastPc.createOffer();
-            await broadcastPc.setLocalDescription(offer);
-            const broadcastRef = doc(db, 'broadcast', 'admin_offer');
-            await setDoc(broadcastRef, { offer });
-        }
-
-        function replaceBroadcastTrack(newStream) {
-            currentAdminStream = newStream;
-            const audioTrack = newStream.getAudioTracks()[0];
-            const sender = broadcastPc.getSenders().find(s => s.track && s.track.kind === 'audio');
-            if (sender) sender.replaceTrack(audioTrack);
-        }
-
-        async function toggleScreenShare() {
-            if (adminScreenStream) {
-                replaceBroadcastTrack(adminMicStream);
-                adminScreenStream.getTracks().forEach(track => track.stop());
-                adminScreenStream = null;
-                shareScreenBtn.innerHTML = '<i class="fas fa-desktop mr-2"></i><span>Share System Audio</span>';
-            } else {
-                adminScreenStream = await navigator.mediaDevices.getDisplayMedia({ audio: true });
-                replaceBroadcastTrack(adminScreenStream);
-                shareScreenBtn.innerHTML = '<i class="fas fa-stop-circle mr-2"></i><span>Stop Sharing</span>';
-                adminScreenStream.getTracks()[0].onended = () => toggleScreenShare();
-            }
-        }
-        
-        async function sendNotification() {
-            const text = notificationText.value.trim();
-            if (!text) return;
-            const notificationRef = doc(db, 'notifications', 'latest');
-            await setDoc(notificationRef, { text, timestamp: Date.now() });
-            notificationText.value = '';
-        }
-
-        // --- Visualizer Logic ---
-        function setupVisualizer(userId, stream) {
-            const canvas = document.getElementById(`viz_${userId}`);
-            if (!canvas) return;
-            const canvasCtx = canvas.getContext('2d');
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioCtx.createMediaStreamSource(stream);
-            const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 32;
-            source.connect(analyser);
-            const bufferLength = analyser.frequencyBinCount;
-            const dataArray = new Uint8Array(bufferLength);
-            visualizers[userId] = { animationFrameId: null };
-            function draw() {
-                visualizers[userId].animationFrameId = requestAnimationFrame(draw);
-                analyser.getByteFrequencyData(dataArray);
-                canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-                const barWidth = canvas.width / bufferLength;
-                let x = 0;
-                for(let i = 0; i < bufferLength; i++) {
-                    const barHeight = dataArray[i] / 10;
-                    canvasCtx.fillStyle = '#4ade80'; // green-400
-                    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-                    x += barWidth;
-                }
-            }
-            draw();
+            deleteDoc(doc(db, 'webrtc_calls', userId));
         }
 
         initialize();
