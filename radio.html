@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Public Radio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+         .glass-card {
+            background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px);
+            border: 1px solid rgba(51, 65, 85, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-gray-900 text-white flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-sm mx-auto p-8 glass-card rounded-2xl shadow-2xl text-center">
+        <h1 class="text-3xl font-bold text-white mb-2">Public Radio</h1>
+        <p id="status" class="text-lg text-gray-400 mb-8">Connecting...</p>
+
+        <div class="my-8">
+            <button id="micBtn" class="w-24 h-24 flex items-center justify-center bg-slate-700 text-white font-bold rounded-full transition-all duration-300 mx-auto shadow-lg">
+                <i id="micIcon" class="fas fa-microphone text-3xl"></i>
+            </button>
+            <p class="text-xs mt-2 text-gray-500">Talk to Admin</p>
+        </div>
+
+        <div id="notification-bar" class="bg-blue-500/20 p-3 rounded-lg text-blue-300 font-medium text-sm hidden">
+        </div>
+        
+        <audio id="adminAudio" autoplay></audio>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js";
+        import { getDatabase, ref, onValue, set, onDisconnect } from "https://www.gstatic.com/firebasejs/11.9.0/firebase-database.js";
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCwzPmWpDmx4SEPeZkvzcYLnOd4k6QLe2U",
+            authDomain: "my-voice-app-4eca5.firebaseapp.com",
+            projectId: "my-voice-app-4eca5",
+            storageBucket: "my-voice-app-4eca5.appspot.com",
+            messagingSenderId: "972654270500",
+            appId: "1:972654270500:web:c29a42a09972f5a4ce20b1",
+            databaseURL: "https://my-voice-app-4eca5-default-rtdb.firebaseio.com/"
+        };
+
+        // --- DOM Elements ---
+        const statusEl = document.getElementById('status');
+        const adminAudio = document.getElementById('adminAudio');
+        const micBtn = document.getElementById('micBtn');
+        const micIcon = document.getElementById('micIcon');
+        const notificationBar = document.getElementById('notification-bar');
+
+        // --- App State ---
+        let db, auth, rtdb;
+        let myId = null;
+        let adminBroadcastConnection;
+        let privateConnection; // For camera/private chat
+        let myStream;
+
+        // --- Main Initialization ---
+        async function initialize() {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            rtdb = getDatabase(app);
+
+            myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+
+            onAuthStateChanged(auth, user => {
+                if (user) {
+                    myId = user.uid;
+                    setupPresence();
+                    listenForAdminBroadcast();
+                    listenForPrivateCalls();
+                    listenForNotifications();
+                    statusEl.textContent = 'Connected to Radio';
+                }
+            });
+
+            await signInAnonymously(auth);
+            micBtn.addEventListener('click', toggleMic);
+        }
+
+        function toggleMic() {
+            const audioTrack = myStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                micIcon.classList.toggle('text-green-400', audioTrack.enabled);
+                micIcon.classList.toggle('text-red-400', !audioTrack.enabled);
+            }
+        }
+        
+        function setupPresence() {
+            const myStatusRef = ref(rtdb, 'status/' + myId);
+            const isOfflineForRTDB = { state: 'offline', last_changed: Date.now() };
+            const isOnlineForRTDB = { state: 'online', last_changed: Date.now() };
+
+            onValue(ref(rtdb, '.info/connected'), (snapshot) => {
+                if (snapshot.val() === false) return;
+                onDisconnect(myStatusRef).set(isOfflineForRTDB).then(() => {
+                    set(myStatusRef, isOnlineForRTDB);
+                });
+            });
+        }
+
+        function listenForAdminBroadcast() {
+            const permissionRef = doc(db, 'permissions', myId);
+            onSnapshot(permissionRef, (snapshot) => {
+                const canListen = snapshot.exists() && snapshot.data().canListen;
+                if (canListen && !adminBroadcastConnection) {
+                    connectToAdminBroadcast();
+                } else if (!canListen && adminBroadcastConnection) {
+                    adminBroadcastConnection.close();
+                    adminBroadcastConnection = null;
+                    adminAudio.srcObject = null;
+                }
+            });
+        }
+
+        async function connectToAdminBroadcast() {
+            const broadcastRef = doc(db, 'broadcast', 'admin_offer');
+            const docSnap = await getDoc(broadcastRef);
+            if (!docSnap.exists()) return;
+
+            const offer = docSnap.data().offer;
+            const pc = new RTCPeerConnection();
+            adminBroadcastConnection = pc;
+
+            pc.ontrack = (event) => {
+                adminAudio.srcObject = event.streams[0];
+            };
+            
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            // Answer is not sent back for a one-way broadcast
+        }
+
+        function listenForPrivateCalls() {
+            const offerRef = doc(db, 'private_calls', myId);
+            onSnapshot(offerRef, async (snapshot) => {
+                if (snapshot.exists()) {
+                    const { offer } = snapshot.data();
+                    if (offer) {
+                        if (privateConnection) privateConnection.close();
+                        
+                        const pc = new RTCPeerConnection();
+                        privateConnection = pc;
+
+                        myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
+                        
+                        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+
+                        await updateDoc(offerRef, { answer });
+                    }
+                }
+            });
+        }
+        
+        function listenForNotifications() {
+            const notificationRef = doc(db, 'notifications', 'latest');
+            onSnapshot(notificationRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const { text } = snapshot.data();
+                    notificationBar.textContent = text;
+                    notificationBar.classList.remove('hidden');
+                    speakText(text);
+                }
+            });
+        }
+        
+        function speakText(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            speechSynthesis.speak(utterance);
+        }
+
+        initialize();
+    </script>
+</body>
+</html>
